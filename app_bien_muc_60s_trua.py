@@ -1,17 +1,21 @@
 import datetime
 import logging
 import os
+import re
 import threading
 import tkinter as tk
+import unicodedata
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-import app_bien_muc_60s as core
-from app_bien_muc_60s import A090_PLACEHOLDER
+import openpyxl
+from openpyxl.styles import Font
+from striprtf.striprtf import rtf_to_text as _rtf_to_text_raw
 
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(APP_DIR, "app_bien_muc_60s_trua.log")
 APP_TITLE = "Tự động biên mục 60s trưa"
+A090_PLACEHOLDER = "K303324"
 
 TRUA_CONFIG = {
     "label": "60s trưa",
@@ -20,64 +24,404 @@ TRUA_CONFIG = {
     "a911": "Nguyễn Thị Quyên",
 }
 
-ENDING_CREW_LABELS = (
-    "Chịu trách nhiệm nội dung",
-    "Biên tập",
-    "Biên dịch",
-    "Dẫn chương trình",
-    "Đạo diễn",
-    "Kỹ thuật",
-    "Thư ký biên tập",
-    "Đồ họa",
-    "Tư vấn trang phục",
-    "Trang phục",
-    "Trang điểm",
-    "Website",
-    "Fanpage",
-    "Kênh Youtube",
+OUTPUT_WIDTHS = {
+    "A": 10.6640625,
+    "B": 48.6640625,
+    "C": 77.21875,
+    "D": 9.109375,
+}
+
+CAMERA_CUE_PHRASES = (
+    "CẬN TRÁI",
+    "CẬN GIỮA",
+    "CẬN PHẢI",
+    "TRUNG GIỮA",
+    "TOÀN PHẢI",
+    "TOÀN TRÁI",
+    "TOÀN GIỮA",
 )
 
 
+def prune_old_log_lines(log_path: str):
+    if not os.path.exists(log_path):
+        return
+    today_prefix = datetime.datetime.now().strftime("%Y-%m-%d")
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        kept_lines = []
+        keep_current_block = False
+        for line in lines:
+            date_match = re.match(r"^(\d{4}-\d{2}-\d{2})", line)
+            if date_match:
+                keep_current_block = date_match.group(1) == today_prefix
+            if keep_current_block:
+                kept_lines.append(line)
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.writelines(kept_lines)
+    except Exception:
+        pass
+
+
+prune_old_log_lines(LOG_FILE)
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     encoding="utf-8",
-    force=True,
 )
 
 
-def extract_ending_crew_rows(input_dir: str, log) -> list[str]:
+def rtf_to_text(rtf_raw: str) -> str:
+    text = _rtf_to_text_raw(rtf_raw)
+    return text.replace("\u00f0", "đ").replace("\u00d0", "Đ").replace("\x00", "")
+
+
+def clean_line(line: str) -> str:
+    return re.sub(r"\s+", " ", line.replace("\xa0", " ")).strip()
+
+
+def normalize_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def normalize_vietnamese(value: str) -> str:
+    value = value.replace("đ", "d").replace("Đ", "D")
+    value = unicodedata.normalize("NFD", value)
+    value = "".join(ch for ch in value if unicodedata.category(ch) != "Mn")
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def is_numeric_id(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, int):
+        return True
+    if isinstance(value, float):
+        return value.is_integer()
+    return str(value).strip().isdigit()
+
+
+def id_to_text(value) -> str:
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def format_duration(value) -> str:
+    if isinstance(value, datetime.datetime):
+        value = value.time()
+    if isinstance(value, datetime.time):
+        total = value.hour * 60 + value.minute
+    elif isinstance(value, datetime.timedelta):
+        total = int(value.total_seconds())
+    elif isinstance(value, (int, float)):
+        total = round(float(value) * 24 * 3600)
+    elif isinstance(value, str):
+        parts = [int(p) for p in re.findall(r"\d+", value)]
+        if len(parts) >= 3:
+            total = parts[-3] * 3600 + parts[-2] * 60 + parts[-1]
+        elif len(parts) == 2:
+            total = parts[0] * 60 + parts[1]
+        elif len(parts) == 1:
+            total = parts[0]
+        else:
+            total = 0
+    else:
+        total = 0
+    return f"00:{total // 60:02d}:{total % 60:02d}"
+
+
+def parse_broadcast_date(ws, list_file_name: str) -> datetime.date:
+    first_value = ws.cell(row=1, column=1).value
+    if isinstance(first_value, str):
+        match = re.search(r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})", first_value)
+        if match:
+            day, month, year = match.groups()
+            return datetime.date(int(year), int(month), int(day))
+
+    match = re.search(r"(20\d{2})(\d{2})(\d{2})", list_file_name)
+    if match:
+        year, month, day = match.groups()
+        return datetime.date(int(year), int(month), int(day))
+
+    return datetime.date.today()
+
+
+def should_take_playlist_row(name, video_id, status) -> bool:
+    if not isinstance(name, str):
+        return False
+    normalized = name.strip().lower()
+    normalized_key = normalize_vietnamese(normalized)
+    if (
+        "coming up" in normalized_key
+        or "nhung nguoi thuc hien" in normalized_key
+        or " end" in normalized_key
+    ):
+        return False
+    if normalized.startswith("60s w "):
+        return False
+    return (
+        (
+            normalized.startswith("60s")
+            or normalized.startswith("gat60s ")
+            or normalized.startswith("60st")
+            or normalized.startswith("live -")
+        )
+        and is_numeric_id(video_id)
+    )
+
+
+def is_vietnamese_upper_title(line: str) -> bool:
+    if len(line) < 8:
+        return False
+    if re.search(r"[a-zàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]", line):
+        return False
+    return bool(re.search(r"[A-ZĐÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴ]", line))
+
+
+def has_vietnamese_signal(line: str) -> bool:
+    return bool(re.search(r"[ĐÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴ]", line))
+
+
+def is_source_slug(line: str) -> bool:
+    upper = line.upper()
+    if has_vietnamese_signal(upper):
+        return False
+    return "/" in upper or " - " in upper or upper.count("-") >= 2
+
+
+def is_stop_line(line: str) -> bool:
+    upper = line.upper()
+    stop_prefixes = (
+        "KHƯƠNG:",
+        "KHƯƠNG :",
+        "NGỌC:",
+        "NGỌC :",
+        "TOÀN ",
+        "TRUNG ",
+        "CẬN ",
+        "NGUỒN ",
+        "REUTERS",
+        "AFP",
+        "BIÊN DỊCH",
+        "NGÀY ",
+        "TÁC GIẢ",
+        "THỰC HIỆN",
+        "[PB",
+        "PHÁT BIỂU",
+    )
+    return upper.startswith(stop_prefixes) or set(upper) <= {"=", "-", " "}
+
+
+def get_green_cf_tag(rtf_raw: str) -> str:
+    match = re.search(r"\{\\colortbl([^}]+)\}", rtf_raw)
+    if not match:
+        return r"\cf1"
+    colors = match.group(1).split(";")
+    for idx, color_def in enumerate(colors):
+        if idx == 0:
+            continue
+        r_match = re.search(r"\\red(\d+)", color_def)
+        g_match = re.search(r"\\green(\d+)", color_def)
+        b_match = re.search(r"\\blue(\d+)", color_def)
+        if not (r_match and g_match and b_match):
+            continue
+        red, green, blue = int(r_match.group(1)), int(g_match.group(1)), int(b_match.group(1))
+        if red == 0 and green == 128 and blue == 0:
+            return f"\\cf{idx}"
+    return r"\cf1"
+
+
+def rtf_fragment_to_text(fragment: str, rtf_prefix: str = r"{\rtf1\ansi ") -> str:
+    try:
+        return clean_line(rtf_to_text(rtf_prefix + fragment + r"\par}"))
+    except Exception:
+        return ""
+
+
+def is_bold_green_paragraph(paragraph_raw: str, green_cf_tag: str) -> bool:
+    has_green = green_cf_tag in paragraph_raw
+    has_bold = bool(re.search(r"\\b(?!0)(?=[\\\s{])", paragraph_raw))
+    return has_green and has_bold
+
+
+def is_title_candidate(line: str) -> bool:
+    if len(line) <= 15:
+        return False
+    upper = line.upper()
+    if any(phrase in upper for phrase in CAMERA_CUE_PHRASES):
+        return False
+    if is_source_slug(line):
+        return False
+    if is_stop_line(line):
+        return False
+    return is_vietnamese_upper_title(line)
+
+
+def extract_title_from_rtf(rtf_raw: str) -> str:
+    green_cf_tag = get_green_cf_tag(rtf_raw)
+    body_match = re.search(r"(.*?\\pard)(.*)", rtf_raw, flags=re.DOTALL)
+    if body_match:
+        rtf_prefix = body_match.group(1)
+        rtf_body = body_match.group(2)
+    else:
+        rtf_prefix = r"{\rtf1\ansi "
+        rtf_body = rtf_raw
+    paragraphs = re.split(r"\\par(?![a-zA-Z])", rtf_body)
+    candidates: list[tuple[int, str]] = []
+
+    for idx, paragraph in enumerate(paragraphs):
+        if not is_bold_green_paragraph(paragraph, green_cf_tag):
+            continue
+        line = rtf_fragment_to_text(paragraph, rtf_prefix)
+        if is_title_candidate(line):
+            candidates.append((idx, line))
+
+    if not candidates:
+        plain_lines = [
+            line
+            for line in (clean_line(x) for x in rtf_to_text(rtf_raw).replace("\r", "").split("\n"))
+            if line
+        ]
+        for line in plain_lines:
+            if is_title_candidate(line):
+                return line
+        return plain_lines[0] if plain_lines else ""
+
+    start_idx, first = candidates[0]
+    title_parts = [first]
+
+    if len(title_parts) < 2 and start_idx + 1 < len(paragraphs):
+        next_paragraph = paragraphs[start_idx + 1]
+        if is_bold_green_paragraph(next_paragraph, green_cf_tag):
+            next_line = rtf_fragment_to_text(next_paragraph, rtf_prefix)
+            if is_title_candidate(next_line):
+                title_parts.append(next_line)
+
+    return " ".join(title_parts)
+
+
+def read_rtf_raw(path: str) -> str:
+    with open(path, "r", encoding="cp1252", errors="ignore") as f:
+        return f.read()
+
+
+def find_matching_rtf(input_dir: str, playlist_name: str) -> str | None:
+    target = normalize_name(playlist_name.rstrip("/"))
+    candidates = []
+    for file_name in os.listdir(input_dir):
+        if not file_name.lower().endswith(".rtf"):
+            continue
+        stem = os.path.splitext(file_name)[0]
+        key = normalize_name(stem)
+        if key == target:
+            return os.path.join(input_dir, file_name)
+        if key in target or target in key:
+            candidates.append((abs(len(key) - len(target)), file_name))
+    if candidates:
+        candidates.sort()
+        return os.path.join(input_dir, candidates[0][1])
+    return None
+
+
+def extract_ending_rows(input_dir: str, log) -> list[str]:
     ending_path = os.path.join(input_dir, "ENDING.rtf")
     if not os.path.exists(ending_path):
         raise RuntimeError("Không tìm thấy file ENDING.rtf để lấy thông tin $a500.")
 
     log("Đọc ekip từ ENDING.rtf")
-    text = core.rtf_to_text(core.read_rtf_raw(ending_path)).replace("\r", "")
-    values = {}
-    for raw_line in text.split("\n"):
-        line = core.clean_line(raw_line)
-        if ":" not in line:
-            continue
-        label, value = line.split(":", 1)
-        label = core.clean_line(label)
-        if label in ENDING_CREW_LABELS:
-            values[label] = core.clean_line(value)
+    text = rtf_to_text(read_rtf_raw(ending_path)).replace("\r", "")
+    return [line for line in (clean_line(raw_line) for raw_line in text.split("\n")) if line]
 
-    return [f"{label}: {values.get(label, '')}" for label in ENDING_CREW_LABELS]
+
+def apply_output_style(ws):
+    font_13 = Font(name="Times New Roman", size=13)
+    font_14 = Font(name="Times New Roman", size=14)
+    for cell in ws[1]:
+        cell.font = font_13
+    for row_idx in range(2, ws.max_row + 1):
+        ws.cell(row=row_idx, column=1).font = font_13
+        if ws.cell(row=row_idx, column=2).value:
+            ws.cell(row=row_idx, column=2).font = font_13
+        if ws.cell(row=row_idx, column=4).value:
+            ws.cell(row=row_idx, column=4).font = font_13
+    for cell in ws["C"][1:]:
+        cell.font = font_14
+    for col, width in OUTPUT_WIDTHS.items():
+        ws.column_dimensions[col].width = width
 
 
 def build_map_trua(input_dir: str, output_dir: str, a090: str, a911: str, log) -> str:
-    original_extract_crew_data = core.extract_crew_data
-    original_build_crew_rows = core.build_crew_rows
+    list_prefix = TRUA_CONFIG["list_prefix"]
+    list_files = [
+        f
+        for f in os.listdir(input_dir)
+        if f.upper().startswith(list_prefix.upper()) and f.lower().endswith(".xlsx")
+    ]
+    if not list_files:
+        raise RuntimeError(f"Không tìm thấy file {list_prefix}*.xlsx trong thư mục input.")
 
-    try:
-        core.extract_crew_data = extract_ending_crew_rows
-        core.build_crew_rows = lambda crew_rows: crew_rows
-        return core.build_map(input_dir, output_dir, a090, a911, TRUA_CONFIG, log)
-    finally:
-        core.extract_crew_data = original_extract_crew_data
-        core.build_crew_rows = original_build_crew_rows
+    list_files.sort()
+    list_path = os.path.join(input_dir, list_files[0])
+    log(f"Đọc playlist: {list_files[0]}")
+
+    wb_list = openpyxl.load_workbook(list_path, data_only=True)
+    ws_list = wb_list.active
+    broadcast_date = parse_broadcast_date(ws_list, list_files[0])
+
+    items = []
+    for row in ws_list.iter_rows(values_only=True):
+        name = row[0] if len(row) > 0 else None
+        video_id = row[2] if len(row) > 2 else None
+        status = row[3] if len(row) > 3 else None
+        duration = row[5] if len(row) > 5 else None
+        if should_take_playlist_row(name, video_id, status):
+            items.append(
+                {
+                    "name": name.strip().rstrip("/"),
+                    "id": id_to_text(video_id),
+                    "duration": format_duration(duration),
+                }
+            )
+
+    if not items:
+        raise RuntimeError(f"Không lọc được tin {TRUA_CONFIG['label']} nào từ playlist.")
+
+    log(f"Đã lọc {len(items)} tin.")
+
+    for item in items:
+        rtf_path = find_matching_rtf(input_dir, item["name"])
+        if not rtf_path:
+            raise RuntimeError(f"Không tìm thấy file RTF cho: {item['name']}")
+        item["title"] = extract_title_from_rtf(read_rtf_raw(rtf_path))
+        log(f"{item['id']}: {item['title']}")
+
+    a500_rows = extract_ending_rows(input_dir, log)
+
+    os.makedirs(output_dir, exist_ok=True)
+    out_name = f"{TRUA_CONFIG['output_prefix']}_{broadcast_date.year}_ Thang{broadcast_date:%m%d}.xlsx"
+    out_path = os.path.join(output_dir, out_name)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["$a090", "$a500", "$a505", "$a911"])
+
+    max_rows = max(len(items), len(a500_rows))
+    for idx in range(1, max_rows + 1):
+        a500 = a500_rows[idx - 1] if idx <= len(a500_rows) else None
+        a505 = None
+        if idx <= len(items):
+            item = items[idx - 1]
+            a505 = f"{idx:02d} - {item['title']}. Thời lượng: {item['duration']}. ID: {item['id']}"
+        ws.append([a090, a500, a505, a911 if idx == 1 else None])
+
+    apply_output_style(ws)
+    wb.save(out_path)
+    return out_path
 
 
 class BienMuc60sTruaApp:
@@ -128,7 +472,8 @@ class BienMuc60sTruaApp:
                 "  Không bắt nếu Cột A bắt đầu bằng '60s W '.\n"
                 "  Bỏ qua nếu Cột A chứa: 'coming up', 'nhung nguoi thuc hien', ' end'.\n"
                 "  Cột C: bắt buộc có ID dạng số; mã bắt đầu bằng chữ sẽ không bắt.\n"
-                "• File RTF tin tức: tên file nên khớp với Cột A trong LIST để app tìm đúng kịch bản."
+                "• File RTF tin tức: tên file nên khớp với Cột A trong LIST để app tìm đúng kịch bản.\n"
+                "• Cột $a500: lấy toàn bộ nội dung từ ENDING.rtf."
             ),
         ).pack(anchor="w")
 
