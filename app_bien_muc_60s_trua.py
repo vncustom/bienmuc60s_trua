@@ -99,7 +99,7 @@ def is_numeric_id(value) -> bool:
         return True
     if isinstance(value, float):
         return value.is_integer()
-    return str(value).strip().isdigit()
+    return bool(re.match(r"^\d+", str(value).strip()))
 
 
 def id_to_text(value) -> str:
@@ -469,9 +469,7 @@ class BienMuc60sTruaApp:
             text=(
                 f"• File LIST (Excel): Bắt đầu bằng '{TRUA_CONFIG['list_prefix']}' (.xlsx).\n"
                 "  Cột A: tên file bắt đầu bằng '60s', 'gat60s ', '60st' hoặc 'live -'.\n"
-                "  Không bắt nếu Cột A bắt đầu bằng '60s W '.\n"
-                "  Bỏ qua nếu Cột A chứa: 'coming up', 'nhung nguoi thuc hien', ' end'.\n"
-                "  Cột C: bắt buộc có ID dạng số; mã bắt đầu bằng chữ sẽ không bắt.\n"
+                "  Cột C: ID phải bắt đầu bằng số; chữ đứng sau số vẫn được bắt.\n"
                 "• File RTF tin tức: tên file nên khớp với Cột A trong LIST để app tìm đúng kịch bản.\n"
                 "• Cột $a500: lấy toàn bộ nội dung từ ENDING.rtf."
             ),
