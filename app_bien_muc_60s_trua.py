@@ -160,6 +160,7 @@ def should_take_playlist_row(name, video_id, status) -> bool:
     if (
         "coming up" in normalized_key
         or "nhung nguoi thuc hien" in normalized_key
+        or "chao dau" in normalized_key
         or " end" in normalized_key
     ):
         return False
@@ -435,6 +436,7 @@ class BienMuc60sTruaApp:
             text=(
                 f"• File LIST (Excel): Bắt đầu bằng '{TRUA_CONFIG['list_prefix']}' (.xlsx).\n"
                 "  Cột A: tên file bắt đầu bằng '60s', 'gat60s ', '60st' hoặc 'live '.\n"
+                "  Bỏ qua dòng có chứa 'CHAO DAU' trong Cột A.\n"
                 "  Cột C: ID phải bắt đầu bằng số; chữ đứng sau số vẫn được bắt.\n"
                 "• File RTF tin tức: tên file nên khớp với Cột A trong LIST để app tìm đúng kịch bản.\n"
                 "• Cột $a500: lấy toàn bộ nội dung từ ENDING.rtf."
