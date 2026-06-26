@@ -38,6 +38,8 @@ CAMERA_CUE_PHRASES = (
     "TRUNG GIỮA",
     "TOÀN PHẢI",
     "TOÀN TRÁI",
+    "TRUNG CẢNH",
+    "CẬN CẢNH",
     "TOÀN GIỮA",
 )
 
@@ -216,25 +218,6 @@ def is_stop_line(line: str) -> bool:
     return upper.startswith(stop_prefixes) or set(upper) <= {"=", "-", " "}
 
 
-def get_green_cf_tag(rtf_raw: str) -> str:
-    match = re.search(r"\{\\colortbl([^}]+)\}", rtf_raw)
-    if not match:
-        return r"\cf1"
-    colors = match.group(1).split(";")
-    for idx, color_def in enumerate(colors):
-        if idx == 0:
-            continue
-        r_match = re.search(r"\\red(\d+)", color_def)
-        g_match = re.search(r"\\green(\d+)", color_def)
-        b_match = re.search(r"\\blue(\d+)", color_def)
-        if not (r_match and g_match and b_match):
-            continue
-        red, green, blue = int(r_match.group(1)), int(g_match.group(1)), int(b_match.group(1))
-        if red == 0 and green == 128 and blue == 0:
-            return f"\\cf{idx}"
-    return r"\cf1"
-
-
 def rtf_fragment_to_text(fragment: str, rtf_prefix: str = r"{\rtf1\ansi ") -> str:
     try:
         return clean_line(rtf_to_text(rtf_prefix + fragment + r"\par}"))
@@ -242,14 +225,14 @@ def rtf_fragment_to_text(fragment: str, rtf_prefix: str = r"{\rtf1\ansi ") -> st
         return ""
 
 
-def is_bold_green_paragraph(paragraph_raw: str, green_cf_tag: str) -> bool:
-    has_green = green_cf_tag in paragraph_raw
-    has_bold = bool(re.search(r"\\b(?!0)(?=[\\\s{])", paragraph_raw))
-    return has_green and has_bold
+def is_cue_line(line: str) -> bool:
+    return bool(re.match(r"^C[1-4]\b", line.strip(), flags=re.IGNORECASE))
 
 
 def is_title_candidate(line: str) -> bool:
-    if len(line) <= 15:
+    if len(line) <= 16:
+        return False
+    if is_cue_line(line):
         return False
     upper = line.upper()
     if any(phrase in upper for phrase in CAMERA_CUE_PHRASES):
@@ -262,7 +245,6 @@ def is_title_candidate(line: str) -> bool:
 
 
 def extract_title_from_rtf(rtf_raw: str) -> str:
-    green_cf_tag = get_green_cf_tag(rtf_raw)
     body_match = re.search(r"(.*?\\pard)(.*)", rtf_raw, flags=re.DOTALL)
     if body_match:
         rtf_prefix = body_match.group(1)
@@ -271,37 +253,21 @@ def extract_title_from_rtf(rtf_raw: str) -> str:
         rtf_prefix = r"{\rtf1\ansi "
         rtf_body = rtf_raw
     paragraphs = re.split(r"\\par(?![a-zA-Z])", rtf_body)
-    candidates: list[tuple[int, str]] = []
 
     for idx, paragraph in enumerate(paragraphs):
-        if not is_bold_green_paragraph(paragraph, green_cf_tag):
-            continue
         line = rtf_fragment_to_text(paragraph, rtf_prefix)
+        if not line:
+            continue
         if is_title_candidate(line):
-            candidates.append((idx, line))
+            title_parts = [line]
+            if idx + 1 < len(paragraphs):
+                next_paragraph = paragraphs[idx + 1]
+                next_line = rtf_fragment_to_text(next_paragraph, rtf_prefix)
+                if next_line and is_title_candidate(next_line):
+                    title_parts.append(next_line)
+            return " ".join(title_parts)
 
-    if not candidates:
-        plain_lines = [
-            line
-            for line in (clean_line(x) for x in rtf_to_text(rtf_raw).replace("\r", "").split("\n"))
-            if line
-        ]
-        for line in plain_lines:
-            if is_title_candidate(line):
-                return line
-        return plain_lines[0] if plain_lines else ""
-
-    start_idx, first = candidates[0]
-    title_parts = [first]
-
-    if len(title_parts) < 2 and start_idx + 1 < len(paragraphs):
-        next_paragraph = paragraphs[start_idx + 1]
-        if is_bold_green_paragraph(next_paragraph, green_cf_tag):
-            next_line = rtf_fragment_to_text(next_paragraph, rtf_prefix)
-            if is_title_candidate(next_line):
-                title_parts.append(next_line)
-
-    return " ".join(title_parts)
+    return ""
 
 
 def read_rtf_raw(path: str) -> str:

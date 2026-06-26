@@ -77,4 +77,11 @@ Quy tắc bắt dòng tin:
 - Bỏ qua nếu cột A chứa `coming up`, `nhung nguoi thuc hien`, hoặc ` end`.
 - Cột C phải bắt đầu bằng số. Nếu cột C trống hoặc bắt đầu bằng chữ, ví dụ `qc123`, dòng đó không được bắt. Nếu chữ cái đứng sau số, ví dụ `260611056a`, dòng đó vẫn được bắt.
 
-Tiêu đề tin được tách từ RTF theo quy tắc: dòng đầu tiên IN HOA, BOLD, màu GREEN, dài hơn 15 ký tự. Nếu dòng ngay dưới cũng IN HOA, BOLD, GREEN và hợp lệ thì gộp thêm, tối đa 2 dòng. Các dòng cue hình như `CẬN GIỮA`, `TOÀN GIỮA`, `CẬN PHẢI` không được coi là tiêu đề.
+Tiêu đề tin được tách từ phần đầu file RTF theo thứ tự xuất hiện:
+
+- Lấy dòng đầu tiên IN HOA toàn bộ, dài hơn 16 ký tự và thuộc phần đầu kịch bản.
+- Không yêu cầu dòng tiêu đề phải BOLD hoặc có màu GREEN.
+- Không lấy các dòng cue bắt đầu bằng `C1`, `C2`, `C3`, `C4` làm tiêu đề.
+- Không lấy các dòng cue hình như `CẬN GIỮA`, `TOÀN GIỮA`, `CẬN PHẢI` làm tiêu đề.
+- Nếu dòng ngay phía dưới cũng IN HOA toàn bộ và dài hơn 16 ký tự thì nối thêm vào tiêu đề.
+- Tiêu đề chỉ gồm 1 dòng hoặc nối tối đa 2 dòng, không nối nhiều hơn.
