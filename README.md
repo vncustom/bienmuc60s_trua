@@ -74,6 +74,7 @@ Quy tắc bắt dòng tin:
 - Cột A được trim và không phân biệt chữ hoa/thường.
 - Cột A phải bắt đầu bằng một trong các prefix: `60s`, `gat60s `, `60st`, hoặc `live -`.
 - Không bắt nếu cột A bắt đầu bằng `60s W `.
+- Không bắt nếu cột A bắt đầu bằng `60ST - WALL`.
 - Bỏ qua nếu cột A chứa `coming up`, `nhung nguoi thuc hien`, `CHAO DAU`, hoặc ` end`.
 - Cột C phải bắt đầu bằng số. Nếu cột C trống hoặc bắt đầu bằng chữ, ví dụ `qc123`, dòng đó không được bắt. Nếu chữ cái đứng sau số, ví dụ `260611056a`, dòng đó vẫn được bắt.
 

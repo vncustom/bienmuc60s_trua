@@ -166,12 +166,16 @@ def should_take_playlist_row(name, video_id, status) -> bool:
         return False
     if normalized.startswith("60s w "):
         return False
+    if normalized.startswith("60st - wall"):
+        return False
     return (
         (
             normalized.startswith("60s")
             or normalized.startswith("gat60s ")
             or normalized.startswith("60st")
             or normalized.startswith("live ")
+            or normalized.startswith("live-")
+            or normalized.startswith("hlive")
         )
         and is_numeric_id(video_id)
     )
@@ -199,18 +203,9 @@ def is_source_slug(line: str) -> bool:
 def is_stop_line(line: str) -> bool:
     upper = line.upper()
     stop_prefixes = (
-        "KHƯƠNG:",
-        "KHƯƠNG :",
-        "NGỌC:",
-        "NGỌC :",
-        "TOÀN ",
-        "TRUNG ",
-        "CẬN ",
-        "NGUỒN ",
         "REUTERS",
         "AFP",
         "BIÊN DỊCH",
-        "NGÀY ",
         "TÁC GIẢ",
         "THỰC HIỆN",
         "[PB",
