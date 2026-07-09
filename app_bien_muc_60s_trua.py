@@ -74,8 +74,38 @@ logging.basicConfig(
 )
 
 
+def ensure_fonttbl_charsets(rtf_raw: str) -> str:
+    fonttbl_start = rtf_raw.find(r"{\fonttbl")
+    if fonttbl_start == -1:
+        return rtf_raw
+
+    depth = 0
+    fonttbl_end = None
+    for idx in range(fonttbl_start, len(rtf_raw)):
+        if rtf_raw[idx] == "{":
+            depth += 1
+        elif rtf_raw[idx] == "}":
+            depth -= 1
+            if depth == 0:
+                fonttbl_end = idx + 1
+                break
+    if fonttbl_end is None:
+        return rtf_raw
+
+    fonttbl = rtf_raw[fonttbl_start:fonttbl_end]
+
+    def add_missing_charset(match):
+        font_entry = match.group(0)
+        if r"\fcharset" in font_entry:
+            return font_entry
+        return re.sub(r"(\\f\d+)", lambda font_match: font_match.group(1) + r"\fcharset0", font_entry, count=1)
+
+    patched_fonttbl = re.sub(r"\{\\f\d+[^{}]*;}", add_missing_charset, fonttbl)
+    return rtf_raw[:fonttbl_start] + patched_fonttbl + rtf_raw[fonttbl_end:]
+
+
 def rtf_to_text(rtf_raw: str) -> str:
-    text = _rtf_to_text_raw(rtf_raw)
+    text = _rtf_to_text_raw(ensure_fonttbl_charsets(rtf_raw))
     return text.replace("\u00f0", "đ").replace("\u00d0", "Đ").replace("\x00", "")
 
 
